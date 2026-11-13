@@ -1,0 +1,39 @@
+
+trigger:
+  - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  buildConfiguration: 'Release'
+
+steps:
+  - checkout: self
+
+  # Install .NET 10 SDK
+  - task: UseDotNet@2
+    displayName: 'Install .NET 10 SDK'
+    inputs:
+      packageType: 'sdk'
+      version: '10.x'
+
+  # Restore NuGet packages
+  - script: dotnet restore SampleApp.csproj
+    displayName: 'Restore Dependencies'
+
+  # Build application
+  - script: dotnet build SampleApp.csproj --configuration $(buildConfiguration) --no-restore
+    displayName: 'Build .NET Application'
+
+  # Publish application
+  - script: dotnet publish SampleApp.csproj --configuration $(buildConfiguration) --no-build --output $(Build.ArtifactStagingDirectory)/publish
+    displayName: 'Publish Application'
+
+  # Upload build artifact
+  - task: PublishPipelineArtifact@1
+    displayName: 'Publish Build Artifact'
+    inputs:
+      targetPath: '$(Build.ArtifactStagingDirectory)/publish'
+      artifact: 'drop'
+      publishLocation: 'pipeline'
