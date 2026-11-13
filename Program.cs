@@ -16,7 +16,7 @@ app.UseHttpsRedirection();
 
 var summaries = new[]
 {
-    "Freezing", "Bracing", "Chilly"
+    "A", "B", "C"
 };
 
 app.MapGet("/weatherforecast", () =>
@@ -29,7 +29,13 @@ app.MapGet("/weatherforecast", () =>
             summaries[Random.Shared.Next(summaries.Length)]
         ))
         .ToArray();
-    return forecast;
+    return new
+{
+    Version = "Green-v2",
+    Environment = "Green",
+    Data = forecast
+};
+    
 })
 .WithName("GetWeatherForecast");
 
