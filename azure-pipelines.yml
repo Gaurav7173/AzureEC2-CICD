@@ -3,7 +3,7 @@ trigger:
   - main
 
 pool:
-  vmImage: 'ubuntu-latest'
+  name: 'AWS-EC2-Agent'
 
 variables:
   buildConfiguration: 'Release'
