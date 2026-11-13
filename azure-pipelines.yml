@@ -7,33 +7,89 @@ pool:
 
 variables:
   buildConfiguration: 'Release'
+  deployPath: '/var/www/sampleapp'
 
-steps:
-  - checkout: self
+stages:
 
-  # Install .NET 10 SDK
-  - task: UseDotNet@2
-    displayName: 'Install .NET 10 SDK'
-    inputs:
-      packageType: 'sdk'
-      version: '10.x'
+# ==========================
+# STAGE 1: BUILD
+# ==========================
+- stage: Build
+  displayName: 'Build .NET Application'
+  jobs:
+  - job: BuildJob
+    steps:
+    - checkout: self
 
-  # Restore NuGet packages
-  - script: dotnet restore SampleApp.csproj
-    displayName: 'Restore Dependencies'
+    - task: UseDotNet@2
+      displayName: 'Install .NET 10 SDK'
+      inputs:
+        packageType: 'sdk'
+        version: '10.x'
 
-  # Build application
-  - script: dotnet build SampleApp.csproj --configuration $(buildConfiguration) --no-restore
-    displayName: 'Build .NET Application'
+    - script: dotnet restore SampleApp.csproj
+      displayName: 'Restore Dependencies'
 
-  # Publish application
-  - script: dotnet publish SampleApp.csproj --configuration $(buildConfiguration) --no-build --output $(Build.ArtifactStagingDirectory)/publish
-    displayName: 'Publish Application'
+    - script: dotnet build SampleApp.csproj --configuration $(buildConfiguration) --no-restore
+      displayName: 'Build Application'
 
-  # Upload build artifact
-  - task: PublishPipelineArtifact@1
-    displayName: 'Publish Build Artifact'
-    inputs:
-      targetPath: '$(Build.ArtifactStagingDirectory)/publish'
-      artifact: 'drop'
-      publishLocation: 'pipeline'
+    - script: dotnet publish SampleApp.csproj --configuration $(buildConfiguration) --no-build --output $(Build.ArtifactStagingDirectory)/publish
+      displayName: 'Publish Application'
+
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish Build Artifact'
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/publish'
+        artifact: 'drop'
+        publishLocation: 'pipeline'
+
+# ==========================
+# STAGE 2: DEPLOY
+# ==========================
+- stage: Deploy
+  displayName: 'Deploy to AWS EC2'
+  dependsOn: Build
+  condition: succeeded()
+  jobs:
+  - deployment: DeployToEC2
+    displayName: 'Deploy Application on EC2'
+    environment: 'AWS-EC2-Production'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: none
+
+          - download: current
+            artifact: drop
+
+          - script: |
+              sudo systemctl stop sampleapp || true
+              sudo rm -rf $(deployPath)/*
+              sudo cp -a "$(Pipeline.Workspace)/drop/." "$(deployPath)/"
+              sudo chown -R ubuntu:ubuntu $(deployPath)
+            displayName: 'Copy Application Files to EC2'
+
+          - script: |
+              sudo tee /etc/systemd/system/sampleapp.service > /dev/null <<'EOF'
+              [Unit]
+              Description=Sample ASP.NET Core Application
+              After=network.target
+
+              [Service]
+              WorkingDirectory=/var/www/sampleapp
+              ExecStart=/usr/bin/dotnet /var/www/sampleapp/SampleApp.dll
+              Restart=always
+              RestartSec=10
+              User=ubuntu
+              Environment=ASPNETCORE_URLS=http://0.0.0.0:8080
+              Environment=ASPNETCORE_ENVIRONMENT=Production
+
+              [Install]
+              WantedBy=multi-user.target
+              EOF
+
+              sudo systemctl daemon-reload
+              sudo systemctl enable sampleapp
+              sudo systemctl restart sampleapp
+            displayName: 'Configure and Start Application Service'
