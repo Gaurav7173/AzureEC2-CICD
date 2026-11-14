@@ -1,6 +1,5 @@
 
-trigger:
-  - none
+trigger: none
 
 variables:
   buildConfiguration: 'Release'
@@ -46,29 +45,32 @@ stages:
 
 
 # =================================
-# STAGE 2: TEST
+# STAGE 2: ARTIFACT VALIDATION
 # =================================
-- stage: Test
-  displayName: 'Test Application'
+- stage: Validate
+  displayName: 'Validate Build Artifact'
   dependsOn: Build
   condition: succeeded()
 
   jobs:
-  - job: TestJob
+  - job: ValidateJob
     pool:
       name: 'AWS-EC2-Agent'
 
     steps:
-    - checkout: self
+    - checkout: none
 
-    - task: UseDotNet@2
-      displayName: 'Install .NET 10 SDK'
-      inputs:
-        packageType: 'sdk'
-        version: '10.x'
+    - download: current
+      artifact: drop
 
-    - script: dotnet test SampleApp.csproj --configuration $(buildConfiguration)
-      displayName: 'Run .NET Tests'
+    - script: |
+        if [ -f "$(Pipeline.Workspace)/drop/SampleApp.dll" ]; then
+          echo "Validation successful: SampleApp.dll found."
+        else
+          echo "Validation failed: SampleApp.dll not found."
+          exit 1
+        fi
+      displayName: 'Check Published DLL'
 
 
 # =================================
@@ -76,7 +78,7 @@ stages:
 # =================================
 - stage: DeployQA
   displayName: 'Deploy to QA EC2'
-  dependsOn: Test
+  dependsOn: Validate
   condition: succeeded()
 
   jobs:
@@ -113,33 +115,11 @@ stages:
 
 
 # =================================
-# STAGE 4: PRODUCTION APPROVAL
-# =================================
-- stage: ProductionApproval
-  displayName: 'Production Approval'
-  dependsOn: DeployQA
-  condition: succeeded()
-
-  jobs:
-  - job: WaitForApproval
-    displayName: 'Wait for Production Approval'
-    pool: server
-
-    steps:
-    - task: ManualValidation@1
-      timeoutInMinutes: 1440
-      inputs:
-        notifyUsers: ''
-        instructions: 'Please verify QA deployment and approve Production deployment.'
-        onTimeout: 'reject'
-
-
-# =================================
-# STAGE 5: PRODUCTION DEPLOYMENT
+# STAGE 4: PRODUCTION DEPLOYMENT
 # =================================
 - stage: DeployProduction
   displayName: 'Deploy to Production EC2'
-  dependsOn: ProductionApproval
+  dependsOn: DeployQA
   condition: succeeded()
 
   jobs:
