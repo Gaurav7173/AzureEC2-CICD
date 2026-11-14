@@ -1,23 +1,24 @@
 
 trigger:
-  - main
-
-pool:
-  name: 'AWS-EC2-Agent'
+  - none
 
 variables:
   buildConfiguration: 'Release'
-  deployPath: '/var/www/sampleapp'
+  qaDeployPath: '/var/www/sampleapp'
+  productionDeployPath: '/var/www/production'
 
 stages:
 
-# ==========================
+# =================================
 # STAGE 1: BUILD
-# ==========================
+# =================================
 - stage: Build
   displayName: 'Build .NET Application'
   jobs:
   - job: BuildJob
+    pool:
+      name: 'AWS-EC2-Agent'
+
     steps:
     - checkout: self
 
@@ -43,17 +44,50 @@ stages:
         artifact: 'drop'
         publishLocation: 'pipeline'
 
-# ==========================
-# STAGE 2: DEPLOY
-# ==========================
-- stage: Deploy
-  displayName: 'Deploy to AWS EC2'
+
+# =================================
+# STAGE 2: TEST
+# =================================
+- stage: Test
+  displayName: 'Test Application'
   dependsOn: Build
   condition: succeeded()
+
   jobs:
-  - deployment: DeployToEC2
-    displayName: 'Deploy Application on EC2'
+  - job: TestJob
+    pool:
+      name: 'AWS-EC2-Agent'
+
+    steps:
+    - checkout: self
+
+    - task: UseDotNet@2
+      displayName: 'Install .NET 10 SDK'
+      inputs:
+        packageType: 'sdk'
+        version: '10.x'
+
+    - script: dotnet test SampleApp.csproj --configuration $(buildConfiguration)
+      displayName: 'Run .NET Tests'
+
+
+# =================================
+# STAGE 3: QA DEPLOYMENT
+# =================================
+- stage: DeployQA
+  displayName: 'Deploy to QA EC2'
+  dependsOn: Test
+  condition: succeeded()
+
+  jobs:
+  - deployment: DeployToQA
+    displayName: 'Deploy Application to QA'
+
+    pool:
+      name: 'AWS-EC2-Agent'
+
     environment: 'AWS-EC2-Production'
+
     strategy:
       runOnce:
         deploy:
@@ -65,31 +99,75 @@ stages:
 
           - script: |
               sudo systemctl stop sampleapp || true
-              sudo rm -rf $(deployPath)/*
-              sudo cp -a "$(Pipeline.Workspace)/drop/." "$(deployPath)/"
-              sudo chown -R ubuntu:ubuntu $(deployPath)
-            displayName: 'Copy Application Files to EC2'
+              sudo rm -rf $(qaDeployPath)/*
+              sudo cp -a "$(Pipeline.Workspace)/drop/." "$(qaDeployPath)/"
+              sudo chown -R ubuntu:ubuntu $(qaDeployPath)
+            displayName: 'Copy Application Files to QA'
 
           - script: |
-              sudo tee /etc/systemd/system/sampleapp.service > /dev/null <<'EOF'
-              [Unit]
-              Description=Sample ASP.NET Core Application
-              After=network.target
-
-              [Service]
-              WorkingDirectory=/var/www/sampleapp
-              ExecStart=/usr/bin/dotnet /var/www/sampleapp/SampleApp.dll
-              Restart=always
-              RestartSec=10
-              User=ubuntu
-              Environment=ASPNETCORE_URLS=http://0.0.0.0:8080
-              Environment=ASPNETCORE_ENVIRONMENT=Production
-
-              [Install]
-              WantedBy=multi-user.target
-              EOF
-
               sudo systemctl daemon-reload
               sudo systemctl enable sampleapp
               sudo systemctl restart sampleapp
-            displayName: 'Configure and Start Application Service'
+              sudo systemctl status sampleapp --no-pager
+            displayName: 'Restart QA Application'
+
+
+# =================================
+# STAGE 4: PRODUCTION APPROVAL
+# =================================
+- stage: ProductionApproval
+  displayName: 'Production Approval'
+  dependsOn: DeployQA
+  condition: succeeded()
+
+  jobs:
+  - job: WaitForApproval
+    displayName: 'Wait for Production Approval'
+    pool: server
+
+    steps:
+    - task: ManualValidation@1
+      timeoutInMinutes: 1440
+      inputs:
+        notifyUsers: ''
+        instructions: 'Please verify QA deployment and approve Production deployment.'
+        onTimeout: 'reject'
+
+
+# =================================
+# STAGE 5: PRODUCTION DEPLOYMENT
+# =================================
+- stage: DeployProduction
+  displayName: 'Deploy to Production EC2'
+  dependsOn: ProductionApproval
+  condition: succeeded()
+
+  jobs:
+  - deployment: DeployToProduction
+    displayName: 'Deploy Application to Production'
+
+    pool:
+      name: 'AWS-EC2-Production-Agent'
+
+    environment: 'Production-EC2'
+
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: none
+
+          - download: current
+            artifact: drop
+
+          - script: |
+              sudo cp -a "$(Pipeline.Workspace)/drop/." "$(productionDeployPath)/"
+              sudo chown -R ubuntu:ubuntu "$(productionDeployPath)"
+            displayName: 'Copy Files to Production'
+
+          - script: |
+              sudo systemctl daemon-reload
+              sudo systemctl enable sampleapp-prod
+              sudo systemctl restart sampleapp-prod
+              sudo systemctl status sampleapp-prod --no-pager
+            displayName: 'Start Production Application'
